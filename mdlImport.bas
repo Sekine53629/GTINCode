@@ -11,8 +11,8 @@ Public Sub ImportHeatImages()
     Dim pth As String, sh As Shape, tgt As Range
     Dim okN As Long, ngN As Long, msg As String
 
-    Set wsD = ThisWorkbook.Worksheets("データ")
-    Set wsC = ThisWorkbook.Worksheets("カード印刷")
+    Set wsD = ThisWorkbook.Worksheets(SHT_DATA)
+    Set wsC = ThisWorkbook.Worksheets(SHT_CARDS)
     Application.ScreenUpdating = False
 
     REM 既存の取込画像を削除（名前で判別）
@@ -21,7 +21,7 @@ Public Sub ImportHeatImages()
     Next i
 
     For i = 0 To N_ITEMS - 1
-        pth = CStr(wsD.Cells(5 + i, 12).Value)   ' L列 = フルパス
+        pth = CStr(wsD.Cells(DATA_ROW1 + i, COL_FULLPATH).Value)   ' G列 = フルパス
         If Len(pth) > 0 Then
             If Dir(pth) <> "" Then
                 cc = i Mod COLS_N

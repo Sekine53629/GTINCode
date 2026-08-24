@@ -20,6 +20,32 @@ Public Const START_C As Long = 2       ' 開始列 (B)
 Public Const START_R As Long = 2       ' 開始行
 Public Const BC_OFS  As Long = 17      ' バーコード左オフセット（余白6+QZ11）
 
+REM --- 定数（シート名）------------------------------------------
+Public Const SHT_DATA    As String = "データ"
+Public Const SHT_NAMING  As String = "命名規則"
+Public Const SHT_ENCODER As String = "バーコード計算"
+Public Const SHT_CARDS   As String = "カード印刷"
+
+REM --- 定数（データシートの設定セル）----------------------------
+Public Const CELL_IMG_DIR    As String = "J1"   ' 画像フォルダ
+Public Const CELL_IMG_EXT    As String = "J2"   ' 拡張子
+Public Const CELL_MASTER_URL As String = "J3"   ' 医薬品マスタの取込元URL
+Private Const REF_IMG_DIR As String = "$J$1"    ' 数式から参照する絶対番地
+Private Const REF_IMG_EXT As String = "$J$2"
+
+Private Const DEFAULT_IMG_DIR As String = "C:\薬局\ヒート画像\"
+Private Const DEFAULT_IMG_EXT As String = ".jpg"
+
+REM --- 定数（データシートの列位置。1始まり）---------------------
+Public Const COL_NO       As Long = 1
+Public Const COL_DRUGNAME As Long = 2
+Public Const COL_GTIN14   As Long = 3
+Public Const COL_CHECK    As Long = 4
+Public Const COL_JAN13    As Long = 5
+Public Const COL_FILENAME As Long = 6
+Public Const COL_FULLPATH As Long = 7
+Public Const DATA_ROW1    As Long = 5   ' 明細の開始行
+
 REM --- 定数（A4 印刷フィット）--------------------------------
 Private Const MM_PER_INCH   As Double = 25.4
 Private Const PT_PER_MM     As Double = 72# / 25.4  ' 1mm あたりのポイント数
@@ -35,24 +61,32 @@ Private Const MSG_MAGNIF_NG As String = "GS1 の最小倍率 80% を下回って
 
 Public Sub BuildWorkbook()
     Dim calcSave As XlCalculation
+    Dim masterRows As Long
     calcSave = Application.Calculation
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.Calculation = xlCalculationManual
 
     On Error GoTo Fail
+    REM 医薬品マスタを先に作る。データシートの数式が tblDrugMaster を
+    REM 参照するため、テーブルが存在しないと数式の書き込み自体が失敗する。
     RemoveOldSheets
+    masterRows = BuildDrugMaster(DEFAULT_MASTER_URL)
     BuildData
     BuildNaming
     BuildEncoder
     BuildCards
-    Sheets("データ").Activate
+
+    ArrangeSheets
+    ThisWorkbook.Worksheets(SHT_DATA).Activate
 
     Application.Calculation = xlCalculationAutomatic
     Application.Calculate
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
-    MsgBox "生成完了。" & vbCrLf & "データシートのC列にヒートのGTIN14桁を入力してください。", vbInformation
+    MsgBox "生成完了。" & vbCrLf & _
+           "医薬品マスタ_ " & Format(masterRows, "#,##0") & " 件" & vbCrLf & _
+           "データシートのC列にヒートのGTIN14桁を入力してください。薬剤名は自動で入ります。", vbInformation
     Exit Sub
 Fail:
     Application.Calculation = calcSave
@@ -64,7 +98,7 @@ End Sub
 REM --- 既存シート削除 ------------------------------------------
 Private Sub RemoveOldSheets()
     Dim nm As Variant, ws As Worksheet
-    For Each nm In Array("データ", "命名規則", "バーコード計算", "カード印刷")
+    For Each nm In Array(SHT_DATA, SHT_NAMING, SHT_ENCODER, SHT_CARDS, MASTER_SHEET)
         On Error Resume Next
         Set ws = Nothing
         Set ws = ThisWorkbook.Worksheets(CStr(nm))
@@ -72,6 +106,22 @@ Private Sub RemoveOldSheets()
         If Not ws Is Nothing Then
             If ThisWorkbook.Worksheets.Count = 1 Then ThisWorkbook.Worksheets.Add
             ws.Delete
+        End If
+    Next nm
+End Sub
+
+REM --- シート順を確定させる --------------------------------
+REM  NewSheet の pos 指定だけだと、元の空シートや医薬品マスタの位置に
+REM  左右されて順番が安定しないので、最後に一括で並べ直す。
+Private Sub ArrangeSheets()
+    Dim nm As Variant, i As Long
+    i = 0
+    For Each nm In Array(SHT_DATA, SHT_NAMING, SHT_ENCODER, SHT_CARDS, MASTER_SHEET)
+        i = i + 1
+        If i = 1 Then
+            ThisWorkbook.Worksheets(CStr(nm)).Move Before:=ThisWorkbook.Worksheets(1)
+        Else
+            ThisWorkbook.Worksheets(CStr(nm)).Move After:=ThisWorkbook.Worksheets(i - 1)
         End If
     Next nm
 End Sub
@@ -91,48 +141,53 @@ REM ==========================================================
   REM 1. データシート
 REM ==========================================================
 Private Sub BuildData()
-    Dim ws As Worksheet, i As Long, r As Long
-    Set ws = NewSheet("データ", 0)
+    Dim ws As Worksheet, i As Long
+    Dim lastRow As Long
+    Set ws = NewSheet(SHT_DATA, 0)
     ws.Move Before:=ThisWorkbook.Worksheets(1)
+    lastRow = DATA_ROW1 + N_ITEMS - 1
 
     With ws.Range("A1")
         .Value = "調剤在庫マスタ（ヒートGTIN カード印刷用）"
         .Font.Size = 14: .Font.Bold = True
     End With
     With ws.Range("A2")
-        .Value = "※ ヒートの (01) の後ろの14桁をC列にそのまま入力。先頭0を除いた13桁でバーコード化します。"
+        .Value = "※ ヒートの (01) の後ろの14桁をC列に入力してください。薬剤名とファイル名は医薬品マスタから自動生成されます。"
         .Font.Size = 9: .Font.Color = RGB(102, 102, 102)
     End With
 
-    REM 設定欄
-    ws.Range("H1").Value = "画像フォルダ（ここを変えれば全行反映）"
-    ws.Range("H1").Font.Bold = True: ws.Range("H1").Font.Size = 10
-    With ws.Range("H2")
-        .Value = "C:\薬局\ヒート画像\"
-        .Font.Color = RGB(0, 0, 255): .Font.Name = "Consolas"
-        .Interior.Color = RGB(255, 249, 224)
-        .Borders.LineStyle = xlContinuous
-        .Borders.Color = RGB(191, 143, 0): .Borders.Weight = xlMedium
+    REM --- 設定欄 ---
+    ws.Range("I1").Value = "画像フォルダ"
+    ws.Range("I2").Value = "拡張子"
+    ws.Range("I3").Value = "医薬品マスタ URL"
+    With ws.Range("I1:I3")
+        .Font.Bold = True: .Font.Size = 10
+        .HorizontalAlignment = xlRight
+        .VerticalAlignment = xlCenter
     End With
-    ws.Range("K1").Value = "拡張子"
-    ws.Range("K1").Font.Bold = True: ws.Range("K1").Font.Size = 10
-    With ws.Range("K2")
-        .Value = ".jpg"
-        .Font.Color = RGB(0, 0, 255): .Font.Name = "Consolas"
+    ws.Range(CELL_IMG_DIR).Value = DEFAULT_IMG_DIR
+    ws.Range(CELL_IMG_EXT).Value = DEFAULT_IMG_EXT
+    ws.Range(CELL_MASTER_URL).Value = DEFAULT_MASTER_URL
+    With ws.Range("J1:J3")
+        .Font.Color = RGB(0, 0, 255): .Font.Name = "Consolas": .Font.Size = 9
         .Interior.Color = RGB(255, 249, 224)
         .Borders.LineStyle = xlContinuous
         .Borders.Color = RGB(191, 143, 0): .Borders.Weight = xlMedium
+        .HorizontalAlignment = xlLeft
+    End With
+    With ws.Range("I4")
+        .Value = "※ URLを変えたら RefreshDrugMaster を実行"
+        .Font.Size = 9: .Font.Color = RGB(102, 102, 102)
     End With
 
-    REM ヘッダ
+    REM --- ヘッダ ---
     Dim hdr As Variant
-    hdr = Array("No.", "薬剤名（規格）", "GTIN-14（ヒート入力）", "検算", _
-                "JAN13（描画用）", "分類・備考", "成分名", "製剤種", _
-                "容量規格", "屋号（メーカー）", "ファイル名（自動生成）", "フルパス（自動生成）")
+    hdr = Array("No.", "薬剤名（自動取得）", "GTIN-14（ヒート入力）", "検算", _
+                "JAN13（描画用）", "ファイル名（自動生成）", "フルパス（自動生成）")
     For i = 0 To UBound(hdr)
         ws.Cells(4, i + 1).Value = hdr(i)
     Next i
-    With ws.Range("A4:L4")
+    With ws.Range("A4:G4")
         .Interior.Color = RGB(31, 56, 100)
         .Font.Color = RGB(255, 255, 255)
         .Font.Bold = True
@@ -140,111 +195,86 @@ Private Sub BuildData()
         .VerticalAlignment = xlCenter
     End With
 
-    REM 品目マスタ: 薬剤名 / 分類 / 成分名 / 製剤種 / 容量
-    Dim m As Variant
-    m = Array( _
-      Array("レクサプロ錠 10mg", "抗うつ薬（SSRI）", "エスシタロプラム", "錠", "10mg"), _
-      Array("ジェイゾロフト錠 25mg", "抗うつ薬（SSRI）", "セルトラリン", "錠", "25mg"), _
-      Array("パキシル錠 10mg", "抗うつ薬（SSRI）", "パロキセチン", "錠", "10mg"), _
-      Array("サインバルタカプセル 20mg", "抗うつ薬（SNRI）", "デュロキセチン", "カプセル", "20mg"), _
-      Array("ベンラファキシン徐放カプセル 37.5mg", "抗うつ薬（SNRI）", "ベンラファキシン", "徐放カプセル", "37.5mg"), _
-      Array("ミルタザピン錠 15mg", "抗うつ薬（NaSSA）", "ミルタザピン", "錠", "15mg"), _
-      Array("トラゾドン錠 25mg", "抗うつ薬", "トラゾドン", "錠", "25mg"), _
-      Array("アリピプラゾール錠 3mg", "抗精神病薬（非定型）", "アリピプラゾール", "錠", "3mg"), _
-      Array("オランザピン錠 5mg", "抗精神病薬（非定型）", "オランザピン", "錠", "5mg"), _
-      Array("リスペリドン錠 1mg", "抗精神病薬（非定型）", "リスペリドン", "錠", "1mg"), _
-      Array("クエチアピン錠 25mg", "抗精神病薬（非定型）", "クエチアピン", "錠", "25mg"), _
-      Array("ブロナンセリン錠 2mg", "抗精神病薬（非定型）", "ブロナンセリン", "錠", "2mg"), _
-      Array("ハロペリドール錠 0.75mg", "抗精神病薬（定型）", "ハロペリドール", "錠", "0.75mg"), _
-      Array("炭酸リチウム錠 200mg", "気分安定薬", "炭酸リチウム", "錠", "200mg"), _
-      Array("バルプロ酸ナトリウム徐放錠 200mg", "気分安定薬", "バルプロ酸ナトリウム", "徐放錠", "200mg"), _
-      Array("ラモトリギン錠 25mg", "気分安定薬（皮疹注意）", "ラモトリギン", "錠", "25mg"), _
-      Array("エチゾラム錠 2mg", "睡眠薬（向精神薬）", "エチゾラム", "錠", "2mg"), _
-      Array("スボレキサント錠 15mg", "睡眠薬（向精神薬）", "スボレキサント", "錠", "15mg"), _
-      Array("レンボレキサント錠 5mg", "睡眠薬", "レンボレキサント", "錠", "5mg"), _
-      Array("ロラゼパム錠 0.5mg", "抗不安薬（向精神薬）", "ロラゼパム", "錠", "0.5mg"))
-
+    REM --- 連番のみ。薬剤名は医薬品マスタから引くので手入力しない ---
     For i = 0 To N_ITEMS - 1
-        r = 5 + i
-        ws.Cells(r, 1).Value = i + 1          ' No.
-        ws.Cells(r, 2).Value = m(i)(0)        ' 薬剤名
-        ws.Cells(r, 6).Value = m(i)(1)        ' 分類
-        ws.Cells(r, 7).Value = m(i)(2)        ' 成分名
-        ws.Cells(r, 8).Value = m(i)(3)        ' 製剤種
-        ws.Cells(r, 9).Value = m(i)(4)        ' 容量規格
-        ws.Cells(r, 10).Value = "未定"        ' 屋号（要確認）
+        ws.Cells(DATA_ROW1 + i, COL_NO).Value = i + 1
     Next i
 
-    REM 数式（検算・13桁抽出・ファイル名・フルパス）
-    Dim fD As String, fE As String, fK As String, fL As String
-    fD = "=IF($C5="""","""",IF(LEN($C5)<>14,""✕ ""&LEN($C5)&""桁""," & _
+    REM --- 数式（薬剤名・検算・13桁抽出・ファイル名・フルパス）---
+    REM  E列 JAN13 は 医薬品マスタの 調剤包装単位コード と同じ13桁なので
+    REM  これをキーに XLOOKUP で薬剤名を引く。
+    Dim fB As String, fD As String, fE As String, fF As String, fG As String
+    fB = "=IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
+         MASTER_TABLE & "[薬剤名],""該当なし""))"
+    fD = "=IF($C5="""","""",IF(LEN($C5)<>14,""NG ""&LEN($C5)&""桁""," & _
          "IF(VALUE(RIGHT($C5,1))<>MOD(10-MOD(SUMPRODUCT(MID($C5,SEQUENCE(13),1)*1," & _
-         "{3;1;3;1;3;1;3;1;3;1;3;1;3}),10),10),""✕ CD不一致"",""✓ OK"")))"
-    fE = "=IF(LEFT($D5,1)<>""✓"","""",RIGHT($C5,13))"
-    fK = "=IF($C5="""","""",$C5&""_""&$G5&""_""&$H5&""_""&" & _
-         "SUBSTITUTE($I5,""."",""-"")&""_""&$J5&$K$2)"
-    fL = "=IF($K5="""","""",$H$2&$K5)"
+         "{3;1;3;1;3;1;3;1;3;1;3;1;3}),10),10),""NG CD不一致"",""OK"")))"
+    fE = "=IF($D5<>""OK"","""",RIGHT($C5,13))"
+    fF = "=LET(nm,IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
+         MASTER_TABLE & "[ファイル名用名称],"""")),IF(nm="""","""",$C5&""_""&nm&" & REF_IMG_EXT & "))"
+    fG = "=IF($F5="""",""""," & REF_IMG_DIR & "&$F5)"
+    ws.Range("B5").Formula = fB
     ws.Range("D5").Formula = fD
     ws.Range("E5").Formula = fE
-    ws.Range("K5").Formula = fK
-    ws.Range("L5").Formula = fL
-    ws.Range("D5:E5").AutoFill Destination:=ws.Range("D5:E" & (4 + N_ITEMS))
-    ws.Range("K5:L5").AutoFill Destination:=ws.Range("K5:L" & (4 + N_ITEMS))
+    ws.Range("F5").Formula = fF
+    ws.Range("G5").Formula = fG
+    ws.Range("B5").AutoFill Destination:=ws.Range("B5:B" & lastRow)
+    ws.Range("D5:G5").AutoFill Destination:=ws.Range("D5:G" & lastRow)
 
-    REM 書式: C列（GTIN入力欄）
-    With ws.Range("C5:C" & (4 + N_ITEMS))
+    REM --- 書式: B列（自動取得）---
+    With ws.Range("B5:B" & lastRow)
+        .Interior.Color = RGB(242, 242, 242)
+        .HorizontalAlignment = xlLeft
+        .WrapText = False
+    End With
+    REM マスタ未収載を警告色
+    With ws.Range("B5:B" & lastRow).FormatConditions
+        .Delete
+        With .Add(Type:=xlTextString, String:="該当なし", TextOperator:=xlContains)
+            .Interior.Color = RGB(255, 199, 206)
+            .Font.Color = RGB(156, 0, 6)
+        End With
+    End With
+
+    REM --- 書式: C列（GTIN入力欄）---
+    With ws.Range("C5:C" & lastRow)
         .NumberFormat = "@"
         .Font.Color = RGB(0, 0, 255)
         .Font.Name = "Consolas"
         .HorizontalAlignment = xlCenter
     End With
     REM 未入力を黄色く（入力済みは白）
-    With ws.Range("C5:C" & (4 + N_ITEMS)).FormatConditions
+    With ws.Range("C5:C" & lastRow).FormatConditions
         .Delete
         .Add(xlCellValue, xlEqual, "=""""").Interior.Color = RGB(255, 242, 204)
     End With
 
-    REM 検算列
-    With ws.Range("D5:D" & (4 + N_ITEMS))
+    REM --- 書式: D列（検算）---
+    With ws.Range("D5:D" & lastRow)
         .HorizontalAlignment = xlCenter
         .Font.Bold = True
     End With
-    With ws.Range("D5:D" & (4 + N_ITEMS)).FormatConditions
+    With ws.Range("D5:D" & lastRow).FormatConditions
         .Delete
-        With .Add(Type:=xlTextString, String:="✕", TextOperator:=xlContains)
+        With .Add(Type:=xlTextString, String:="NG", TextOperator:=xlContains)
             .Interior.Color = RGB(255, 199, 206)
             .Font.Color = RGB(156, 0, 6)
         End With
-        With .Add(Type:=xlTextString, String:="✓", TextOperator:=xlContains)
+        With .Add(Type:=xlTextString, String:="OK", TextOperator:=xlContains)
             .Interior.Color = RGB(198, 239, 206)
             .Font.Color = RGB(0, 97, 0)
         End With
     End With
 
-    REM E列（13桁）
-    With ws.Range("E5:E" & (4 + N_ITEMS))
+    REM --- 書式: E列（13桁）---
+    With ws.Range("E5:E" & lastRow)
         .NumberFormat = "@"
         .HorizontalAlignment = xlCenter
         .Font.Name = "Consolas"
     End With
 
-    REM G〜J列（手入力欄）
-    With ws.Range("G5:J" & (4 + N_ITEMS))
-        .Font.Color = RGB(0, 0, 255)
-        .Interior.Color = RGB(255, 249, 224)
-        .HorizontalAlignment = xlCenter
-    End With
-    REM J列「未定」を警告色
-    With ws.Range("J5:J" & (4 + N_ITEMS)).FormatConditions
-        .Delete
-        With .Add(Type:=xlTextString, String:="未定", TextOperator:=xlContains)
-            .Interior.Color = RGB(255, 242, 204)
-            .Font.Color = RGB(191, 143, 0)
-        End With
-    End With
-
-    REM K〜L列（自動生成・触らせない）
-    With ws.Range("K5:L" & (4 + N_ITEMS))
+    REM --- 書式: F〜G列（自動生成・触らせない）---
+    With ws.Range("F5:G" & lastRow)
         .Interior.Color = RGB(242, 242, 242)
         .Font.Color = RGB(0, 0, 0)
         .Font.Name = "Consolas"
@@ -253,50 +283,58 @@ Private Sub BuildData()
         .WrapText = False
     End With
 
-    REM A列・罫線・行高
-    ws.Range("A5:A" & (4 + N_ITEMS)).HorizontalAlignment = xlCenter
-    With ws.Range("A4:L" & (4 + N_ITEMS))
+    REM --- A列・罫線・行高 ---
+    ws.Range("A5:A" & lastRow).HorizontalAlignment = xlCenter
+    With ws.Range("A4:G" & lastRow)
         .Borders.LineStyle = xlContinuous
         .Borders.Color = RGB(142, 169, 219)
         .Borders.Weight = xlThin
     End With
-    ws.Rows("5:" & (4 + N_ITEMS)).RowHeight = 20
+    ws.Rows("5:" & lastRow).RowHeight = 20
 
-    REM 列幅
+    REM --- 列幅 ---
     Dim cw As Variant, ci As Long
-    cw = Array(40, 200, 140, 100, 140, 160, 140, 80, 70, 100, 340, 440)
+    cw = Array(40, 260, 150, 110, 130, 320, 400)
     For ci = 0 To UBound(cw)
         SetColWidthPoints ws.Columns(ci + 1), CDbl(cw(ci))
     Next ci
+    SetColWidthPoints ws.Columns("H"), 20#
+    SetColWidthPoints ws.Columns("I"), 110#
+    SetColWidthPoints ws.Columns("J"), 430#
 
-    REM 使い方
+    REM --- 使い方 ---
     Dim u As Variant, ur As Long
     u = Array("■ 使い方", _
       "1. ヒート（PTPシート）の (01) の後ろの14桁を、C列にそのまま入力します。", _
-      "2. D列の検算が ✓ OK になれば正しいコードです。✕ の間はバーコードは描画されません。", _
+      "2. D列の検算が OK になると、B列に薬剤名が医薬品マスタから自動で入ります。NG の間はバーコードも描画されません。", _
       "3. 先頭の0を除いた13桁（E列）でJANバーコードを描画します。", _
-      "4. ヒートの写真は「カード印刷」シートの点線枠に直接貼り付けてください。", _
-      "5. 「カード印刷」シートで Ctrl+P。A4縦1ページに20枚印刷されます。")
+      "4. F列のファイル名でヒート画像を保存し、ImportHeatImages を実行すると一括配置されます。", _
+      "5. 「カード印刷」シートで Ctrl+P。A4縦1ページに20枚印刷されます。", _
+      "", _
+      "■ 医薬品マスタの更新", _
+      "配布ファイル名には年月日が入ります。新しい版が出たら J3 のURLを書き換えて RefreshDrugMaster を実行してください。")
     ur = 4 + N_ITEMS + 3
     For ci = 0 To UBound(u)
         ws.Cells(ur + ci, 1).Value = u(ci)
     Next ci
     ws.Cells(ur, 1).Font.Bold = True
     ws.Cells(ur, 1).Font.Size = 12
+    ws.Cells(ur + 7, 1).Font.Bold = True
+    ws.Cells(ur + 7, 1).Font.Size = 12
 
-    With ws.Cells(ur + 8, 1)
-        .Value = "⚠ 重要：C列はGTIN未入力です。必ず実物のヒートを見て入力してください。"
+    With ws.Cells(ur + 11, 1)
+        .Value = "【重要】C列はGTIN未入力です。必ず実物のヒートを見て入力してください。"
         .Font.Color = RGB(192, 0, 0): .Font.Bold = True: .Font.Size = 10
     End With
-    With ws.Cells(ur + 9, 1)
+    With ws.Cells(ur + 12, 1)
         .Value = "   同じ薬剤名でもメーカー・規格・包装単位（PTP14錠/100錠等）ごとにGTINは異なります。"
         .Font.Color = RGB(192, 0, 0): .Font.Size = 9
     End With
-    With ws.Cells(ur + 11, 1)
-        .Value = "※ G〜J列の成分名・製剤種・容量は参考値です。実物と照合してください。"
+    With ws.Cells(ur + 14, 1)
+        .Value = "※ B列が「該当なし」の場合、そのGTINは医薬品マスタに収載されていません。マスタの版とヒートの表示を確認してください。"
         .Font.Color = RGB(102, 102, 102): .Font.Size = 9
     End With
-    With ws.Cells(ur + 12, 1)
+    With ws.Cells(ur + 15, 1)
         .Value = "※ 本カードは棚札・目視確認補助用です。調剤監査は必ずヒート実物のGS1コードで行ってください。"
         .Font.Color = RGB(102, 102, 102): .Font.Size = 9
     End With
@@ -312,7 +350,7 @@ REM ==========================================================
 REM ==========================================================
 Private Sub BuildNaming()
     Dim ws As Worksheet, i As Long
-    Set ws = NewSheet("命名規則", 1)
+    Set ws = NewSheet(SHT_NAMING, 1)
 
     With ws.Range("A1")
         .Value = "ヒート画像 ファイル命名規則"
@@ -321,33 +359,32 @@ Private Sub BuildNaming()
     ws.Range("A3").Value = "■ 基本形"
     ws.Range("A3").Font.Bold = True: ws.Range("A3").Font.Size = 12
     With ws.Range("A4")
-        .Value = "GTIN14_成分名_製剤種_容量規格_屋号.jpg"
+        .Value = "GTIN14_薬剤名.jpg"
         .Font.Name = "Consolas": .Font.Size = 12
         .Interior.Color = RGB(232, 240, 254)
     End With
+    With ws.Range("A5")
+        .Value = "薬剤名は医薬品マスタの「販売名 + 規格・製造承認時規格」です。データシートのF列に自動生成されます。"
+        .Font.Size = 9: .Font.Color = RGB(102, 102, 102)
+    End With
 
-    ws.Range("A6").Value = "■ 実例"
-    ws.Range("A6").Font.Bold = True: ws.Range("A6").Font.Size = 12
+    ws.Range("A7").Value = "■ 実例"
+    ws.Range("A7").Font.Bold = True: ws.Range("A7").Font.Size = 12
     Dim ex As Variant
-    ex = Array("04987224712215_エスシタロプラム_錠_10mg_屋号.jpg", _
-               "04987128131117_デュロキセチン_カプセル_20mg_屋号.jpg", _
-               "04987041814116_ベンラファキシン_徐放カプセル_37-5mg_屋号.jpg")
+    ex = Array("04987173574513_ポビドンヨードガーグル液７％「シオエ」 ７％１ｍＬ.jpg", _
+               "04502072021816_ハリケインゲル歯科用２０％ １ｇ.jpg")
     For i = 0 To UBound(ex)
-        With ws.Cells(7 + i, 1)
+        With ws.Cells(8 + i, 1)
             .Value = ex(i)
             .Font.Name = "Consolas"
             .Interior.Color = RGB(242, 242, 242)
         End With
     Next i
-    With ws.Range("A10")
-        .Value = "※ 実例のGTIN・屋号は書式を示すためのものです（実在確認していません）。実際の値はヒートでご確認ください。"
-        .Font.Size = 9: .Font.Color = RGB(192, 0, 0)
-    End With
 
-    ws.Range("A12").Value = "■ 各要素のルール"
-    ws.Range("A12").Font.Bold = True: ws.Range("A12").Font.Size = 12
-    ws.Range("A13").Value = "要素": ws.Range("B13").Value = "内容": ws.Range("C13").Value = "ルール・注意点"
-    With ws.Range("A13:C13")
+    ws.Range("A11").Value = "■ 各要素のルール"
+    ws.Range("A11").Font.Bold = True: ws.Range("A11").Font.Size = 12
+    ws.Range("A12").Value = "要素": ws.Range("B12").Value = "内容": ws.Range("C12").Value = "ルール・注意点"
+    With ws.Range("A12:C12")
         .Interior.Color = RGB(31, 56, 100)
         .Font.Color = RGB(255, 255, 255)
         .Font.Bold = True
@@ -357,61 +394,71 @@ Private Sub BuildNaming()
     Dim rl As Variant
     rl = Array( _
       Array("GTIN14", "ヒートの(01)の後ろ14桁", "先頭0を含めてそのまま。これが一意キーになる"), _
-      Array("成分名", "一般名（カタカナ）", "商品名ではなく成分名。後発品との照合が楽になる"), _
-      Array("製剤種", "錠 / カプセル / 徐放錠 等", "OD錠・徐放錠は別物として必ず区別する"), _
-      Array("容量規格", "10mg / 37.5mg 等", "小数点は - （ハイフン）に置換。例: 37.5mg → 37-5mg"), _
-      Array("屋号", "メーカー名・屋号", "後発品は屋号で別物になるため必須。未定なら「未定」"))
+      Array("薬剤名", "販売名 + 規格", "医薬品マスタから自動取得。手で書き換えない"))
     For i = 0 To UBound(rl)
-        ws.Cells(14 + i, 1).Value = rl(i)(0)
-        ws.Cells(14 + i, 2).Value = rl(i)(1)
-        ws.Cells(14 + i, 3).Value = rl(i)(2)
+        ws.Cells(13 + i, 1).Value = rl(i)(0)
+        ws.Cells(13 + i, 2).Value = rl(i)(1)
+        ws.Cells(13 + i, 3).Value = rl(i)(2)
     Next i
-    With ws.Range("A14:A18")
+    With ws.Range("A13:A14")
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
     End With
-    With ws.Range("A13:C18")
+    With ws.Range("A12:C14")
         .Borders.LineStyle = xlContinuous
         .Borders.Color = RGB(142, 169, 219)
     End With
 
-    ws.Range("A20").Value = "■ ファイル名に使えない文字"
-    ws.Range("A20").Font.Bold = True: ws.Range("A20").Font.Size = 12
-    With ws.Range("A21")
+    ws.Range("A16").Value = "■ ファイル名に使えない文字"
+    ws.Range("A16").Font.Bold = True: ws.Range("A16").Font.Size = 12
+    With ws.Range("A17")
         .Value = "\  /  :  *  ?  ""  <  >  |"
         .Font.Name = "Consolas"
         .Interior.Color = RGB(255, 224, 224)
     End With
-    With ws.Range("A22")
-        .Value = "※ 容量の小数点「.」はファイル名では使えますが、拡張子と紛らわしいため - に置換しています。"
+    With ws.Range("A18")
+        .Value = "※ これらは Power Query 側で薬剤名から除去済みです。医薬品マスタの「ファイル名用名称」列を使っています。"
         .Font.Size = 9: .Font.Color = RGB(102, 102, 102)
     End With
 
-    ws.Range("A24").Value = "■ 運用手順"
-    ws.Range("A24").Font.Bold = True: ws.Range("A24").Font.Size = 12
-    Dim op As Variant
-    op = Array("1. ヒートを撮影し、画像フォルダに保存する。", _
-               "2. 「データ」シートのC列にGTIN14、G〜J列に4要素を入力する。", _
-               "3. K列に正しいファイル名が自動生成されるので、それをコピーして画像をリネームする。", _
-               "4. L列のフルパスが実ファイルの場所と一致していれば取込可能になる。")
-    For i = 0 To UBound(op)
-        ws.Cells(25 + i, 1).Value = op(i)
+    ws.Range("A20").Value = "■ 医薬品マスタの仕組み"
+    ws.Range("A20").Font.Bold = True: ws.Range("A20").Font.Size = 12
+    Dim pq As Variant
+    pq = Array("・「医薬品マスタ」シートは Power Query が Web上のGS1コード一覧xlsxから自動生成します。", _
+               "・キーは「調剤包装単位コード」13桁。ヒートの(01)から先頭0を除いた値と一致します。", _
+               "・データシートのE列 JAN13 をキーに XLOOKUP で薬剤名を引いています。", _
+               "・取込元URLはデータシートの J3 セルです。配布ファイル名には年月日が入ります。", _
+               "・URLを書き換えたら RefreshDrugMaster を実行するとマスタが作り直されます。", _
+               "・同じURLのまま再取得するだけなら「データ」タブの「すべて更新」でも構いません。")
+    For i = 0 To UBound(pq)
+        ws.Cells(21 + i, 1).Value = pq(i)
     Next i
 
-    With ws.Range("A30")
+    ws.Range("A28").Value = "■ 運用手順"
+    ws.Range("A28").Font.Bold = True: ws.Range("A28").Font.Size = 12
+    Dim op As Variant
+    op = Array("1. データシートのC列にヒートのGTIN14桁を入力する。", _
+               "2. B列に薬剤名、F列にファイル名が自動で入る。", _
+               "3. ヒートを撮影し、F列のファイル名で画像フォルダ J1 に保存する。", _
+               "4. ImportHeatImages を実行すると、G列のフルパスから画像が一括配置される。")
+    For i = 0 To UBound(op)
+        ws.Cells(29 + i, 1).Value = op(i)
+    Next i
+
+    With ws.Range("A34")
         .Value = "■ 重要：パスを書いても自動では表示されません"
         .Font.Bold = True: .Font.Size = 12: .Font.Color = RGB(192, 0, 0)
     End With
-    ws.Range("A31").Value = "Excelの仕様上、セルにパスを書くだけでは画像は出ません（画像はセル値ではなく図形オブジェクトのため）。"
-    ws.Range("A32").Value = "IMAGE関数はWebのURL専用で、ローカルのC:\... は参照できません。"
-    With ws.Range("A33")
-        .Value = "⇒ 下の ImportHeatImages マクロを実行すると、L列のパスから画像を一括配置します。"
+    ws.Range("A35").Value = "Excelの仕様上、セルにパスを書くだけでは画像は出ません。画像はセル値ではなく図形オブジェクトのためです。"
+    ws.Range("A36").Value = "IMAGE関数はWebのURL専用で、ローカルの C:\... は参照できません。"
+    With ws.Range("A37")
+        .Value = "⇒ ImportHeatImages マクロを実行すると、G列のパスから画像を一括配置します。"
         .Font.Bold = True
     End With
 
-    SetColWidthPoints ws.Columns("A"), 300#
-    SetColWidthPoints ws.Columns("B"), 200#
-    SetColWidthPoints ws.Columns("C"), 420#
+    SetColWidthPoints ws.Columns("A"), 380#
+    SetColWidthPoints ws.Columns("B"), 180#
+    SetColWidthPoints ws.Columns("C"), 380#
     ws.Rows(4).RowHeight = 24
     ThisWorkbook.Windows(1).Activate
     ws.Activate
