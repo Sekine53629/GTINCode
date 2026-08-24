@@ -303,38 +303,51 @@ Private Sub BuildData()
     SetColWidthPoints ws.Columns("J"), 430#
 
     REM --- 使い方 ---
-    Dim u As Variant, ur As Long
+    REM  見出し行は先頭の記号で判別して太字にする。行位置をベタ書きすると
+    REM  文面を足すたびにずれるため。
+    Dim u As Variant, ur As Long, wr As Long
     u = Array("■ 使い方", _
       "1. ヒート（PTPシート）の (01) の後ろの14桁を、C列にそのまま入力します。", _
       "2. D列の検算が OK になると、B列に薬剤名が医薬品マスタから自動で入ります。NG の間はバーコードも描画されません。", _
       "3. 先頭の0を除いた13桁（E列）でJANバーコードを描画します。", _
-      "4. F列のファイル名でヒート画像を保存し、ImportHeatImages を実行すると一括配置されます。", _
+      "4. 対象行を選んで AssignHeatImage を実行し、ヒートの写真を選びます。F列の名前へ自動でリネームして格納されます。", _
       "5. 「カード印刷」シートで Ctrl+P。A4縦1ページに20枚印刷されます。", _
+      "", _
+      "■ 画像まわりのマクロ", _
+      "AssignHeatImage         選択行に画像を割り当てる。複数行を選ぶと順番にダイアログが出る", _
+      "AssignMissingHeatImages 画像が未配置の行だけを上から順に処理する", _
+      "ImportHeatImages        G列のパスから画像をカードへ配置し直す", _
+      "OpenImageFolder         画像フォルダをエクスプローラで開く", _
       "", _
       "■ 医薬品マスタの更新", _
       "配布ファイル名には年月日が入ります。新しい版が出たら J3 のURLを書き換えて RefreshDrugMaster を実行してください。")
     ur = 4 + N_ITEMS + 3
     For ci = 0 To UBound(u)
         ws.Cells(ur + ci, 1).Value = u(ci)
+        If Left$(CStr(u(ci)), 1) = "■" Then
+            ws.Cells(ur + ci, 1).Font.Bold = True
+            ws.Cells(ur + ci, 1).Font.Size = 12
+        End If
     Next ci
-    ws.Cells(ur, 1).Font.Bold = True
-    ws.Cells(ur, 1).Font.Size = 12
-    ws.Cells(ur + 7, 1).Font.Bold = True
-    ws.Cells(ur + 7, 1).Font.Size = 12
 
-    With ws.Cells(ur + 11, 1)
+    wr = ur + UBound(u) + 2
+    With ws.Cells(wr, 1)
         .Value = "【重要】C列はGTIN未入力です。必ず実物のヒートを見て入力してください。"
         .Font.Color = RGB(192, 0, 0): .Font.Bold = True: .Font.Size = 10
     End With
-    With ws.Cells(ur + 12, 1)
+    With ws.Cells(wr + 1, 1)
         .Value = "   同じ薬剤名でもメーカー・規格・包装単位（PTP14錠/100錠等）ごとにGTINは異なります。"
         .Font.Color = RGB(192, 0, 0): .Font.Size = 9
     End With
-    With ws.Cells(ur + 14, 1)
+    With ws.Cells(wr + 3, 1)
         .Value = "※ B列が「該当なし」の場合、そのGTINは医薬品マスタに収載されていません。マスタの版とヒートの表示を確認してください。"
         .Font.Color = RGB(102, 102, 102): .Font.Size = 9
     End With
-    With ws.Cells(ur + 15, 1)
+    With ws.Cells(wr + 4, 1)
+        .Value = "※ 画像は既定ではコピーされ、元ファイルは残ります。移動にしたい場合は mdlPhoto の MOVE_AFTER_STORE を True にしてください。"
+        .Font.Color = RGB(102, 102, 102): .Font.Size = 9
+    End With
+    With ws.Cells(wr + 5, 1)
         .Value = "※ 本カードは棚札・目視確認補助用です。調剤監査は必ずヒート実物のGS1コードで行ってください。"
         .Font.Color = RGB(102, 102, 102): .Font.Size = 9
     End With
@@ -439,8 +452,9 @@ Private Sub BuildNaming()
     Dim op As Variant
     op = Array("1. データシートのC列にヒートのGTIN14桁を入力する。", _
                "2. B列に薬剤名、F列にファイル名が自動で入る。", _
-               "3. ヒートを撮影し、F列のファイル名で画像フォルダ J1 に保存する。", _
-               "4. ImportHeatImages を実行すると、G列のフルパスから画像が一括配置される。")
+               "3. ヒートを撮影し、スマホ同期やダウンロードフォルダに置く。手でリネームする必要はない。", _
+               "4. 対象行を選んで AssignHeatImage を実行し、写真を選ぶ。F列の名前へリネームして画像フォルダへ格納される。", _
+               "5. 続けて画像を配置するか聞かれるので「はい」を選ぶ。あとから ImportHeatImages を実行しても同じ。")
     For i = 0 To UBound(op)
         ws.Cells(29 + i, 1).Value = op(i)
     Next i
