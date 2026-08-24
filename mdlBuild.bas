@@ -198,11 +198,11 @@ Private Sub BuildData()
     End With
     With ws.Range("D5:D" & (4 + N_ITEMS)).FormatConditions
         .Delete
-        With .Add(xlTextString, , "✕")
+        With .Add(Type:=xlTextString, String:="✕", TextOperator:=xlContains)
             .Interior.Color = RGB(255, 199, 206)
             .Font.Color = RGB(156, 0, 6)
         End With
-        With .Add(xlTextString, , "✓")
+        With .Add(Type:=xlTextString, String:="✓", TextOperator:=xlContains)
             .Interior.Color = RGB(198, 239, 206)
             .Font.Color = RGB(0, 97, 0)
         End With
@@ -224,7 +224,7 @@ Private Sub BuildData()
     REM J列「未定」を警告色
     With ws.Range("J5:J" & (4 + N_ITEMS)).FormatConditions
         .Delete
-        With .Add(xlTextString, , "未定")
+        With .Add(Type:=xlTextString, String:="未定", TextOperator:=xlContains)
             .Interior.Color = RGB(255, 242, 204)
             .Font.Color = RGB(191, 143, 0)
         End With
