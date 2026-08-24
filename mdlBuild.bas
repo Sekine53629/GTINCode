@@ -587,6 +587,9 @@ Private Sub BuildCards()
     Next i
 
     REM --- 行高さ設定（実寸の要）---
+    REM 行1 は印刷範囲外のスペーサ。既定の高さ 18.75pt のままだと
+    REM ページレイアウト表示で下がはみ出すので、列A と同じ 1pt に揃える。
+    ws.Rows(1).RowHeight = 1
     For i = 0 To 4
         r0 = START_R + i * (CARD_H + GAP_R)
         ws.Rows(r0 & ":" & (r0 + 1)).RowHeight = 10        ' 薬剤名
