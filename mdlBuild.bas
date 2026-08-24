@@ -20,6 +20,16 @@ Public Const START_C As Long = 2       ' 開始列 (B)
 Public Const START_R As Long = 2       ' 開始行
 Public Const BC_OFS  As Long = 17      ' バーコード左オフセット（余白6+QZ11）
 
+REM --- 定数（A4 印刷フィット）--------------------------------
+Private Const A4_W_MM       As Double = 210#        ' A4 幅
+Private Const A4_H_MM       As Double = 297#        ' A4 高さ
+Private Const MM_PER_INCH   As Double = 25.4
+Private Const PT_PER_MM     As Double = 72# / 25.4  ' 1mm あたりのポイント数
+Private Const MIN_MARGIN_MM As Double = 5#          ' プリンタの印刷不可領域を見込んだ最小余白
+Private Const FIT_SLACK_PT  As Double = 1#          ' 丸め誤差でページが割れないための余裕
+Private Const MSG_A4_OVER   As String = "印刷範囲が A4 1ページに収まりません。最小余白まで詰めましたがページが分割されます。"
+Private Const MSG_A4_SIZE   As String = "実測サイズ_ "
+
 Public Sub BuildWorkbook()
     Dim calcSave As XlCalculation
     calcSave = Application.Calculation
@@ -589,27 +599,64 @@ Private Sub BuildCards()
     Next i
 
     REM --- 印刷設定（scale 100 固定が実寸維持の要）---
-    Application.PrintCommunication = False
-    With ws.PageSetup
-        .Orientation = xlPortrait
-        .PaperSize = xlPaperA4
-        .Zoom = 100                  ' FitToPages は使わない
-        .TopMargin = Application.InchesToPoints(20 / 25.4)
-        .BottomMargin = Application.InchesToPoints(20 / 25.4)
-        .LeftMargin = Application.InchesToPoints(14 / 25.4)
-        .RightMargin = Application.InchesToPoints(14 / 25.4)
-        .HeaderMargin = 0
-        .FooterMargin = 0
-        .CenterHorizontally = True
-        .CenterVertically = True
-        .PrintArea = "$A$1:$" & ColLetter(lastC) & "$" & (lastR + 1)
-    End With
-    Application.PrintCommunication = True
+    REM 印刷範囲はカード実体 B2 から だけを囲む。
+    REM 旧コードのように A1 起点にするとスペーサの列A 1pt と行1 分が余分に入り、ページが割れる。
+    FitPrintAreaToA4 ws, ws.Range(ws.Cells(START_R, START_C), ws.Cells(lastR, lastC))
 
     ThisWorkbook.Windows(1).Activate
     ws.Activate
     ActiveWindow.DisplayGridlines = False
     ws.Range("A1").Select
+End Sub
+
+REM ==========================================================
+REM  印刷範囲を A4 縦 1ページにぴったり収める
+REM  Zoom は 100 固定のまま、実測サイズから余白を逆算して中央に置く。
+REM  行高・列幅はピクセル単位に丸められるため、計算値ではなく Range.Width/Height を使う。
+REM ==========================================================
+Private Sub FitPrintAreaToA4(ByVal ws As Worksheet, ByVal target As Range)
+    Dim pageW As Double, pageH As Double, minMargin As Double
+    Dim marginX As Double, marginY As Double
+    Dim isOver As Boolean
+
+    pageW = Application.InchesToPoints(A4_W_MM / MM_PER_INCH)
+    pageH = Application.InchesToPoints(A4_H_MM / MM_PER_INCH)
+    minMargin = Application.InchesToPoints(MIN_MARGIN_MM / MM_PER_INCH)
+
+    REM 実測幅・高さから左右・上下の余白を均等に割り付ける
+    marginX = (pageW - target.Width) / 2 - FIT_SLACK_PT
+    marginY = (pageH - target.Height) / 2 - FIT_SLACK_PT
+    If marginX < minMargin Then
+        marginX = minMargin
+        isOver = True
+    End If
+    If marginY < minMargin Then
+        marginY = minMargin
+        isOver = True
+    End If
+
+    Application.PrintCommunication = False
+    With ws.PageSetup
+        .Orientation = xlPortrait
+        .PaperSize = xlPaperA4
+        .Zoom = 100                  ' FitToPages は使わない
+        .LeftMargin = marginX
+        .RightMargin = marginX
+        .TopMargin = marginY
+        .BottomMargin = marginY
+        .HeaderMargin = 0
+        .FooterMargin = 0
+        .CenterHorizontally = True
+        .CenterVertically = True
+        .PrintArea = target.Address
+    End With
+    Application.PrintCommunication = True
+
+    If isOver Then
+        MsgBox MSG_A4_OVER & vbCrLf & MSG_A4_SIZE & _
+               Format(target.Width / PT_PER_MM, "0.0") & " x " & _
+               Format(target.Height / PT_PER_MM, "0.0") & " mm", vbExclamation
+    End If
 End Sub
 
 REM --- 列番号 → 列文字 -----------------------------------------
