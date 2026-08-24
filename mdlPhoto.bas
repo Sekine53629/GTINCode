@@ -20,7 +20,6 @@ Private Const REG_DOWNLOADS As String = _
     "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders\{374DE290-123F-4565-9164-39C4925E467B}"
 Private Const ENV_USERPROFILE As String = "USERPROFILE"
 Private Const DIR_DOWNLOADS   As String = "Downloads"
-Private Const PATH_SEP        As String = "\"
 Private Const EXT_SEP         As String = "."
 
 REM --- 動作切替 ------------------------------------------------
@@ -39,6 +38,8 @@ Private Const MSG_ERR       As String = "画像の格納に失敗しました。
 Private Const MSG_RESULT    As String = "格納_ "
 Private Const MSG_SKIP      As String = " 件 / 見送り_ "
 Private Const MSG_PLACE     As String = "カード印刷シートに画像を配置しますか_"
+Private Const MSG_TOO_LONG  As String = "格納先のパスが長すぎます。画像フォルダを浅い場所へ移してください。文字数_ "
+Private Const MSG_NO_DIR    As String = "画像フォルダが未設定です。データシートの設定欄を確認してください。"
 
 REM ==========================================================
 REM  選択している行に画像を割り当てる
@@ -157,15 +158,26 @@ REM  戻り値 True で格納成功。msg に格納先または失敗理由を�
 REM ==========================================================
 Public Function StoreHeatImage(ByVal ws As Worksheet, ByVal targetRow As Long, _
                                ByVal srcPath As String, ByRef msg As String) As Boolean
+    On Error GoTo Fail
     Dim destPath As String, destDir As String
     Dim fso As Object
 
     StoreHeatImage = False
     msg = ""
 
+    If Len(NormalizeFolder(CStr(ws.Range(CELL_IMG_DIR).Value))) = 0 Then
+        msg = MSG_NO_DIR
+        Exit Function
+    End If
     destPath = ImagePathFor(ws, targetRow)
     If Len(destPath) = 0 Then
         msg = MSG_NO_NAME
+        Exit Function
+    End If
+    REM Dir も AddPicture も従来パス長までしか扱えない。
+    REM ここで弾かないと、格納はできたのに配置で見つからない状態になる。
+    If Len(destPath) > MAX_PATH_LEN Then
+        msg = MSG_TOO_LONG & Len(destPath)
         Exit Function
     End If
     If Len(Dir(srcPath)) = 0 Then
@@ -184,6 +196,10 @@ Public Function StoreHeatImage(ByVal ws As Worksheet, ByVal targetRow As Long, _
 
     msg = destPath
     StoreHeatImage = True
+    Exit Function
+Fail:
+    StoreHeatImage = False
+    msg = Err.Number & "_ " & Err.Description
 End Function
 
 REM --- その行の画像の格納先フルパス。未生成なら空文字 ----------

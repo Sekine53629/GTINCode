@@ -34,7 +34,15 @@ Private Const REF_IMG_DIR As String = "$J$1"    ' 数式から参照する絶対
 Private Const REF_IMG_EXT As String = "$J$2"
 
 Private Const DEFAULT_IMG_DIR As String = "C:\薬局\ヒート画像\"
+Public  Const PATH_SEP        As String = "\"
+Public  Const MAX_PATH_LEN    As Long = 259   ' Windows の従来パス長の上限
 Private Const DEFAULT_IMG_EXT As String = ".jpg"
+
+Private Const FMT_GENERAL   As String = "General"
+Private Const FMT_TEXT      As String = "@"
+
+Private Const MSG_REPAIRED  As String = "データシートの数式を貼り直しました。"
+Private Const MSG_REPAIR_NG As String = "数式の貼り直しに失敗しました。"
 
 REM --- 定数（データシートの列位置。1始まり）---------------------
 Public Const COL_NO       As Long = 1
@@ -200,26 +208,7 @@ Private Sub BuildData()
         ws.Cells(DATA_ROW1 + i, COL_NO).Value = i + 1
     Next i
 
-    REM --- 数式（薬剤名・検算・13桁抽出・ファイル名・フルパス）---
-    REM  E列 JAN13 は 医薬品マスタの 調剤包装単位コード と同じ13桁なので
-    REM  これをキーに XLOOKUP で薬剤名を引く。
-    Dim fB As String, fD As String, fE As String, fF As String, fG As String
-    fB = "=IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
-         MASTER_TABLE & "[薬剤名],""該当なし""))"
-    fD = "=IF($C5="""","""",IF(LEN($C5)<>14,""NG ""&LEN($C5)&""桁""," & _
-         "IF(VALUE(RIGHT($C5,1))<>MOD(10-MOD(SUMPRODUCT(MID($C5,SEQUENCE(13),1)*1," & _
-         "{3;1;3;1;3;1;3;1;3;1;3;1;3}),10),10),""NG CD不一致"",""OK"")))"
-    fE = "=IF($D5<>""OK"","""",RIGHT($C5,13))"
-    fF = "=LET(nm,IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
-         MASTER_TABLE & "[ファイル名用名称],"""")),IF(nm="""","""",$C5&""_""&nm&" & REF_IMG_EXT & "))"
-    fG = "=IF($F5="""",""""," & REF_IMG_DIR & "&$F5)"
-    ws.Range("B5").Formula = fB
-    ws.Range("D5").Formula = fD
-    ws.Range("E5").Formula = fE
-    ws.Range("F5").Formula = fF
-    ws.Range("G5").Formula = fG
-    ws.Range("B5").AutoFill Destination:=ws.Range("B5:B" & lastRow)
-    ws.Range("D5:G5").AutoFill Destination:=ws.Range("D5:G" & lastRow)
+    WriteDataFormulas ws
 
     REM --- 書式: B列（自動取得）---
     With ws.Range("B5:B" & lastRow)
@@ -238,7 +227,7 @@ Private Sub BuildData()
 
     REM --- 書式: C列（GTIN入力欄）---
     With ws.Range("C5:C" & lastRow)
-        .NumberFormat = "@"
+        .NumberFormat = FMT_TEXT
         .Font.Color = RGB(0, 0, 255)
         .Font.Name = "Consolas"
         .HorizontalAlignment = xlCenter
@@ -268,7 +257,7 @@ Private Sub BuildData()
 
     REM --- 書式: E列（13桁）---
     With ws.Range("E5:E" & lastRow)
-        .NumberFormat = "@"
+        .NumberFormat = FMT_TEXT
         .HorizontalAlignment = xlCenter
         .Font.Name = "Consolas"
     End With
@@ -356,6 +345,67 @@ Private Sub BuildData()
     ActiveWindow.FreezePanes = False
     ws.Range("A5").Select
     ActiveWindow.FreezePanes = True
+End Sub
+
+REM ==========================================================
+REM  データシートの数式を書き込む
+REM  BuildData からも RepairDataFormulas からも呼ぶ。
+REM ----------------------------------------------------------
+REM  画像フォルダ J1 の末尾に区切り文字が無い、拡張子 J2 の先頭に
+REM  ドットが無い、という入力は普通に起こる。素直に連結すると
+REM  「...\画像A0498....jpg」のような壊れたパスになり、格納は
+REM  できているのに見つからない、という症状になるので数式側で吸収する。
+REM ==========================================================
+Private Sub WriteDataFormulas(ByVal ws As Worksheet)
+    Dim lastRow As Long
+    Dim fB As String, fD As String, fE As String, fF As String, fG As String
+
+    lastRow = DATA_ROW1 + N_ITEMS - 1
+
+    REM E列 JAN13 は 医薬品マスタの 調剤包装単位コード と同じ13桁なので
+    REM これをキーに XLOOKUP で薬剤名を引く。
+    fB = "=IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
+         MASTER_TABLE & "[薬剤名],""該当なし""))"
+    fD = "=IF($C5="""","""",IF(LEN($C5)<>14,""NG ""&LEN($C5)&""桁""," & _
+         "IF(VALUE(RIGHT($C5,1))<>MOD(10-MOD(SUMPRODUCT(MID($C5,SEQUENCE(13),1)*1," & _
+         "{3;1;3;1;3;1;3;1;3;1;3;1;3}),10),10),""NG CD不一致"",""OK"")))"
+    fE = "=IF($D5<>""OK"","""",RIGHT($C5,13))"
+    fF = "=LET(nm,IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
+         MASTER_TABLE & "[ファイル名用名称],"""")),ex," & REF_IMG_EXT & "," & _
+         "IF(nm="""","""",$C5&""_""&nm&IF(LEFT(ex,1)=""."",ex,"".""&ex)))"
+    fG = "=LET(d," & REF_IMG_DIR & ",IF($F5="""",""""," & _
+         "IF(RIGHT(d,1)=""" & PATH_SEP & """,d,d&""" & PATH_SEP & """)&$F5))"
+
+    REM 表示形式が「文字列」のセルへ数式を書くと、数式そのものが文字列として
+    REM 入ってしまう。貼り直しにも耐えるよう、書き込む前に標準へ戻す。
+    ws.Range("B5:B" & lastRow).NumberFormat = FMT_GENERAL
+    ws.Range("D5:G" & lastRow).NumberFormat = FMT_GENERAL
+
+    ws.Range("B5").Formula = fB
+    ws.Range("D5").Formula = fD
+    ws.Range("E5").Formula = fE
+    ws.Range("F5").Formula = fF
+    ws.Range("G5").Formula = fG
+    ws.Range("B5").AutoFill Destination:=ws.Range("B5:B" & lastRow)
+    ws.Range("D5:G5").AutoFill Destination:=ws.Range("D5:G" & lastRow)
+
+    REM E列は13桁を文字列として見せたいので書き込んだ後に戻す
+    ws.Range("E5:E" & lastRow).NumberFormat = FMT_TEXT
+End Sub
+
+REM ==========================================================
+REM  既存ブックの数式だけを貼り直す
+REM  C列の入力値と設定欄は触らないので、ブックを作り直さずに
+REM  数式の修正を取り込める。
+REM ==========================================================
+Public Sub RepairDataFormulas()
+    On Error GoTo Fail
+    WriteDataFormulas ThisWorkbook.Worksheets(SHT_DATA)
+    Application.Calculate
+    MsgBox MSG_REPAIRED, vbInformation
+    Exit Sub
+Fail:
+    MsgBox MSG_REPAIR_NG & vbCrLf & Err.Number & "_ " & Err.Description, vbCritical
 End Sub
 
 REM ==========================================================
@@ -638,7 +688,7 @@ Private Sub BuildCards()
             .Merge
             .Style = "Normal"
             .Formula = "=データ!E" & dRow
-            .NumberFormat = "@"
+            .NumberFormat = FMT_TEXT
             .Font.Name = "Consolas"
             .Font.Size = 6
             .Font.Color = RGB(0, 0, 0)

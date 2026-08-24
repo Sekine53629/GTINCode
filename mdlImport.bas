@@ -17,6 +17,7 @@ Private Const AUTO_SIZE    As Long = -1  ' AddPicture に元サイズを使わ�
 Private Const MSG_PLACED  As String = "配置_ "
 Private Const MSG_MISSING As String = "見つからないファイル_ "
 Private Const MSG_UNIT    As String = " 件"
+Private Const MSG_HINT    As String = "パスが実在するか確認してください。画像フォルダの指定ミスと、パス長の上限超えが主な原因です。上限_ "
 
 REM ==========================================================
 REM  画像を配置して結果を通知する
@@ -28,7 +29,10 @@ Public Sub ImportHeatImages()
     PlaceHeatImages okN, ngN, missing
 
     t = MSG_PLACED & okN & MSG_UNIT
-    If ngN > 0 Then t = t & vbCrLf & MSG_MISSING & ngN & MSG_UNIT & missing
+    If ngN > 0 Then
+        t = t & vbCrLf & MSG_MISSING & ngN & MSG_UNIT & missing
+        t = t & vbCrLf & vbCrLf & MSG_HINT & MAX_PATH_LEN & " 文字"
+    End If
     MsgBox t, IIf(ngN > 0, vbExclamation, vbInformation)
 End Sub
 
