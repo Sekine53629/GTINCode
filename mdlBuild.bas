@@ -21,14 +21,17 @@ Public Const START_R As Long = 2       ' 開始行
 Public Const BC_OFS  As Long = 17      ' バーコード左オフセット（余白6+QZ11）
 
 REM --- 定数（A4 印刷フィット）--------------------------------
-Private Const A4_W_MM       As Double = 210#        ' A4 幅
-Private Const A4_H_MM       As Double = 297#        ' A4 高さ
 Private Const MM_PER_INCH   As Double = 25.4
 Private Const PT_PER_MM     As Double = 72# / 25.4  ' 1mm あたりのポイント数
-Private Const MIN_MARGIN_MM As Double = 5#          ' プリンタの印刷不可領域を見込んだ最小余白
-Private Const FIT_SLACK_PT  As Double = 1#          ' 丸め誤差でページが割れないための余裕
-Private Const MSG_A4_OVER   As String = "印刷範囲が A4 1ページに収まりません。最小余白まで詰めましたがページが分割されます。"
-Private Const MSG_A4_SIZE   As String = "実測サイズ_ "
+Private Const MODULE_PT     As Double = 1#          ' バーコード 1モジュール幅 = 列幅 1pt
+Private Const JAN_MODULE_MM As Double = 0.33        ' JAN-13 標準モジュール幅 倍率100%
+Private Const MIN_MAGNIF    As Double = 0.8         ' GS1 が認める最小倍率 80%
+Private Const MIN_ZOOM      As Long = 60            ' 縮小印刷の下限
+Private Const ZOOM_TRIES    As Long = 12            ' 縮小率の追い込み回数
+Private Const MSG_A4_ZOOM   As String = "A4 1ページに収めるため印刷倍率を下げました。"
+Private Const MSG_A4_NG     As String = "A4 1ページに収まりませんでした。プリンタの紙サイズと余白設定を確認してください。"
+Private Const MSG_MODULE    As String = "バーコード 1モジュール幅_ "
+Private Const MSG_MAGNIF_NG As String = "GS1 の最小倍率 80% を下回っています。読み取り精度が落ちる可能性があります。"
 
 Public Sub BuildWorkbook()
     Dim calcSave As XlCalculation
@@ -599,63 +602,171 @@ Private Sub BuildCards()
     Next i
 
     REM --- 印刷設定（scale 100 固定が実寸維持の要）---
-    REM 印刷範囲はカード実体 B2 から だけを囲む。
-    REM 旧コードのように A1 起点にするとスペーサの列A 1pt と行1 分が余分に入り、ページが割れる。
-    FitPrintAreaToA4 ws, ws.Range(ws.Cells(START_R, START_C), ws.Cells(lastR, lastC))
-
+    REM 改ページ位置を読むので、先にシートをアクティブにしておく。
     ThisWorkbook.Windows(1).Activate
     ws.Activate
     ActiveWindow.DisplayGridlines = False
     ws.Range("A1").Select
+
+    REM 印刷範囲はカード実体 B2 から だけを囲む。
+    REM A1 起点にするとスペーサの列A 1pt と行1 分が余分に入り、ページが割れる。
+    FitPrintAreaToA4 ws, ws.Range(ws.Cells(START_R, START_C), ws.Cells(lastR, lastC))
 End Sub
 
 REM ==========================================================
-REM  印刷範囲を A4 縦 1ページにぴったり収める
-REM  Zoom は 100 固定のまま、実測サイズから余白を逆算して中央に置く。
-REM  行高・列幅はピクセル単位に丸められるため、計算値ではなく Range.Width/Height を使う。
+REM  印刷範囲を A4 縦 1ページに収める
+REM  用紙サイズから余白を逆算しただけでは収まらない。プリンタごとに
+REM  印刷不可領域があり、実際の印刷可能幅は「用紙幅 - 余白」より狭いため。
+REM  そこで実際の改ページ位置を見ながら、1ページに収まる最大の余白を選ぶ。
 REM ==========================================================
 Private Sub FitPrintAreaToA4(ByVal ws As Worksheet, ByVal target As Range)
-    Dim pageW As Double, pageH As Double, minMargin As Double
+    Dim cand As Variant, k As Long
     Dim marginX As Double, marginY As Double
-    Dim isOver As Boolean
+    Dim okX As Boolean, okY As Boolean
+    Dim scrSave As Boolean
 
-    pageW = Application.InchesToPoints(A4_W_MM / MM_PER_INCH)
-    pageH = Application.InchesToPoints(A4_H_MM / MM_PER_INCH)
-    minMargin = Application.InchesToPoints(MIN_MARGIN_MM / MM_PER_INCH)
-
-    REM 実測幅・高さから左右・上下の余白を均等に割り付ける
-    marginX = (pageW - target.Width) / 2 - FIT_SLACK_PT
-    marginY = (pageH - target.Height) / 2 - FIT_SLACK_PT
-    If marginX < minMargin Then
-        marginX = minMargin
-        isOver = True
-    End If
-    If marginY < minMargin Then
-        marginY = minMargin
-        isOver = True
-    End If
+    scrSave = Application.ScreenUpdating
+    Application.ScreenUpdating = True    ' 改ページ位置の取得には再ページ割りが要る
 
     Application.PrintCommunication = False
     With ws.PageSetup
         .Orientation = xlPortrait
         .PaperSize = xlPaperA4
-        .Zoom = 100                  ' FitToPages は使わない
-        .LeftMargin = marginX
-        .RightMargin = marginX
-        .TopMargin = marginY
-        .BottomMargin = marginY
+        .Zoom = 100                  ' FitToPages は使わない。実寸維持の要
         .HeaderMargin = 0
         .FooterMargin = 0
         .CenterHorizontally = True
         .CenterVertically = True
         .PrintArea = target.Address
+        .LeftMargin = 0
+        .RightMargin = 0
+        .TopMargin = 0
+        .BottomMargin = 0
     End With
     Application.PrintCommunication = True
 
-    If isOver Then
-        MsgBox MSG_A4_OVER & vbCrLf & MSG_A4_SIZE & _
-               Format(target.Width / PT_PER_MM, "0.0") & " x " & _
-               Format(target.Height / PT_PER_MM, "0.0") & " mm", vbExclamation
+    REM 収まる最大の余白を探す。縦の改ページは左右余白、横の改ページは
+    REM 上下余白だけで決まるので、左右と上下は独立に判定できる。
+    cand = Array(15#, 12#, 10#, 8#, 6#, 4#, 2#, 0#)
+    For k = 0 To UBound(cand)
+        If Not okX Then
+            ApplyMarginX ws, CDbl(cand(k))
+            If ws.VPageBreaks.Count = 0 Then
+                marginX = CDbl(cand(k))
+                okX = True
+            End If
+        End If
+        If Not okY Then
+            ApplyMarginY ws, CDbl(cand(k))
+            If ws.HPageBreaks.Count = 0 Then
+                marginY = CDbl(cand(k))
+                okY = True
+            End If
+        End If
+        If okX And okY Then Exit For
+    Next k
+
+    ApplyMarginX ws, marginX
+    ApplyMarginY ws, marginY
+
+    REM 余白ゼロでも収まらない場合だけ印刷倍率を落とす
+    If Not (okX And okY) Then ShrinkToOnePage ws, target
+
+    Application.ScreenUpdating = scrSave
+End Sub
+
+REM --- 左右余白を mm 指定で設定 --------------------------------
+Private Sub ApplyMarginX(ByVal ws As Worksheet, ByVal marginMm As Double)
+    Dim ptVal As Double
+    ptVal = Application.InchesToPoints(marginMm / MM_PER_INCH)
+    ws.PageSetup.LeftMargin = ptVal
+    ws.PageSetup.RightMargin = ptVal
+End Sub
+
+REM --- 上下余白を mm 指定で設定 --------------------------------
+Private Sub ApplyMarginY(ByVal ws As Worksheet, ByVal marginMm As Double)
+    Dim ptVal As Double
+    ptVal = Application.InchesToPoints(marginMm / MM_PER_INCH)
+    ws.PageSetup.TopMargin = ptVal
+    ws.PageSetup.BottomMargin = ptVal
+End Sub
+
+REM --- 1ページ目に収まっている幅 pt ----------------------------
+Private Function PageSpanWidth(ByVal ws As Worksheet, ByVal target As Range) As Double
+    Dim c As Long
+    If ws.VPageBreaks.Count = 0 Then
+        PageSpanWidth = target.Width
+        Exit Function
+    End If
+    c = ws.VPageBreaks(1).Location.Column - 1
+    If c < target.Column Then
+        PageSpanWidth = 0
+    Else
+        PageSpanWidth = ws.Range(ws.Cells(target.Row, target.Column), _
+                                 ws.Cells(target.Row, c)).Width
+    End If
+End Function
+
+REM --- 1ページ目に収まっている高さ pt --------------------------
+Private Function PageSpanHeight(ByVal ws As Worksheet, ByVal target As Range) As Double
+    Dim r As Long
+    If ws.HPageBreaks.Count = 0 Then
+        PageSpanHeight = target.Height
+        Exit Function
+    End If
+    r = ws.HPageBreaks(1).Location.Row - 1
+    If r < target.Row Then
+        PageSpanHeight = 0
+    Else
+        PageSpanHeight = ws.Range(ws.Cells(target.Row, target.Column), _
+                                  ws.Cells(r, target.Column)).Height
+    End If
+End Function
+
+REM ==========================================================
+REM  余白ゼロでも収まらない場合の退避処理
+REM  実測した印刷可能領域から必要な縮小率を求め、1ページに収める。
+REM  バーコードが縮むため、結果のモジュール幅と倍率を必ず通知する。
+REM ==========================================================
+Private Sub ShrinkToOnePage(ByVal ws As Worksheet, ByVal target As Range)
+    Dim pw As Double, ph As Double, ratio As Double
+    Dim z As Long, k As Long, fitted As Boolean
+    Dim moduleMm As Double, magnif As Double
+    Dim msg As String
+
+    ws.PageSetup.Zoom = 100
+    pw = PageSpanWidth(ws, target)
+    ph = PageSpanHeight(ws, target)
+
+    ratio = 1#
+    If target.Width > 0 Then
+        If pw / target.Width < ratio Then ratio = pw / target.Width
+    End If
+    If target.Height > 0 Then
+        If ph / target.Height < ratio Then ratio = ph / target.Height
+    End If
+
+    z = Int(100# * ratio)
+    For k = 1 To ZOOM_TRIES
+        If z < MIN_ZOOM Then Exit For
+        ws.PageSetup.Zoom = z
+        If ws.VPageBreaks.Count = 0 And ws.HPageBreaks.Count = 0 Then
+            fitted = True
+            Exit For
+        End If
+        z = z - 1
+    Next k
+
+    moduleMm = MODULE_PT / PT_PER_MM * ws.PageSetup.Zoom / 100#
+    magnif = moduleMm / JAN_MODULE_MM
+    If fitted Then
+        msg = MSG_A4_ZOOM & vbCrLf & _
+              "Zoom_ " & ws.PageSetup.Zoom & "%" & vbCrLf & _
+              MSG_MODULE & Format(moduleMm, "0.000") & " mm _ " & Format(magnif * 100#, "0") & "%"
+        If magnif < MIN_MAGNIF Then msg = msg & vbCrLf & MSG_MAGNIF_NG
+        MsgBox msg, vbExclamation
+    Else
+        MsgBox MSG_A4_NG, vbCritical
     End If
 End Sub
 
