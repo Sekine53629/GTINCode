@@ -18,7 +18,7 @@ Public Const COLS_N  As Long = 4       ' 横に並べる枚数
 Public Const GAP_R   As Long = 4       ' 段間の行数
 Public Const START_C As Long = 2       ' 開始列 (B)
 Public Const START_R As Long = 2       ' 開始行
-Public Const BC_OFS  As Long = 17      ' バーコード左オフセット（余白6+QZ11）
+REM バーコードの左オフセットは mdlBarcode の DBL_MODULES から実行時に求める
 
 REM --- 定数（シート名）------------------------------------------
 Public Const SHT_DATA    As String = "データ"
@@ -49,7 +49,7 @@ Public Const COL_NO       As Long = 1
 Public Const COL_DRUGNAME As Long = 2
 Public Const COL_GTIN14   As Long = 3
 Public Const COL_CHECK    As Long = 4
-Public Const COL_JAN13    As Long = 5
+Public Const COL_CODE13   As Long = 5   ' 調剤包装単位コード13桁。マスタ照合キー
 Public Const COL_FILENAME As Long = 6
 Public Const COL_FULLPATH As Long = 7
 Public Const DATA_ROW1    As Long = 5   ' 明細の開始行
@@ -58,7 +58,7 @@ REM --- 定数（A4 印刷フィット）--------------------------------
 Private Const MM_PER_INCH   As Double = 25.4
 Private Const PT_PER_MM     As Double = 72# / 25.4  ' 1mm あたりのポイント数
 Private Const MODULE_PT     As Double = 1#          ' バーコード 1モジュール幅 = 列幅 1pt
-Private Const JAN_MODULE_MM As Double = 0.33        ' JAN-13 標準モジュール幅 倍率100%
+Private Const NOMINAL_MODULE_MM As Double = 0.33    ' GS1 標準モジュール幅 倍率100%
 Private Const MIN_MAGNIF    As Double = 0.8         ' GS1 が認める最小倍率 80%
 Private Const MIN_ZOOM      As Long = 60            ' 縮小印刷の下限
 Private Const ZOOM_TRIES    As Long = 12            ' 縮小率の追い込み回数
@@ -191,7 +191,7 @@ Private Sub BuildData()
     REM --- ヘッダ ---
     Dim hdr As Variant
     hdr = Array("No.", "薬剤名（自動取得）", "GTIN-14（ヒート入力）", "検算", _
-                "JAN13（描画用）", "ファイル名（自動生成）", "フルパス（自動生成）")
+                "13桁（マスタ照合用）", "ファイル名（自動生成）", "フルパス（自動生成）")
     For i = 0 To UBound(hdr)
         ws.Cells(4, i + 1).Value = hdr(i)
     Next i
@@ -298,7 +298,8 @@ Private Sub BuildData()
     u = Array("■ 使い方", _
       "1. ヒート（PTPシート）の (01) の後ろの14桁を、C列にそのまま入力します。", _
       "2. D列の検算が OK になると、B列に薬剤名が医薬品マスタから自動で入ります。NG の間はバーコードも描画されません。", _
-      "3. 先頭の0を除いた13桁（E列）でJANバーコードを描画します。", _
+      "3. GS1データバー限定型のバーコードを描画します。ヒートに印字されているのと同じ symbology です。", _
+      "   規格上、GTINの先頭桁が 0 か 1 のものだけ描画できます。調剤包装単位のコードは先頭0なので通常は問題ありません。", _
       "4. 対象行を選んで AssignHeatImage を実行し、ヒートの写真を選びます。F列の名前へ自動でリネームして格納されます。", _
       "5. 「カード印刷」シートで Ctrl+P。A4縦1ページに20枚印刷されます。", _
       "", _
@@ -362,7 +363,7 @@ Private Sub WriteDataFormulas(ByVal ws As Worksheet)
 
     lastRow = DATA_ROW1 + N_ITEMS - 1
 
-    REM E列 JAN13 は 医薬品マスタの 調剤包装単位コード と同じ13桁なので
+    REM E列は 医薬品マスタの 調剤包装単位コード と同じ13桁なので
     REM これをキーに XLOOKUP で薬剤名を引く。
     fB = "=IF($E5="""","""",XLOOKUP($E5," & MASTER_TABLE & "[調剤包装単位コード]," & _
          MASTER_TABLE & "[薬剤名],""該当なし""))"
@@ -489,7 +490,7 @@ Private Sub BuildNaming()
     Dim pq As Variant
     pq = Array("・「医薬品マスタ」シートは Power Query が Web上のGS1コード一覧xlsxから自動生成します。", _
                "・キーは「調剤包装単位コード」13桁。ヒートの(01)から先頭0を除いた値と一致します。", _
-               "・データシートのE列 JAN13 をキーに XLOOKUP で薬剤名を引いています。", _
+               "・データシートのE列 13桁 をキーに XLOOKUP で薬剤名を引いています。", _
                "・取込元URLはデータシートの J3 セルです。配布ファイル名には年月日が入ります。", _
                "・URLを書き換えたら RefreshDrugMaster を実行するとマスタが作り直されます。", _
                "・同じURLのまま再取得するだけなら「データ」タブの「すべて更新」でも構いません。")
@@ -530,96 +531,69 @@ Private Sub BuildNaming()
 End Sub
 
 REM ==========================================================
-  REM 3. バーコード計算シート（JAN-13 規格定義）
+  REM 3. バーコード計算シート（GS1データバー限定型）
 REM ==========================================================
 Private Sub BuildEncoder()
-    Dim ws As Worksheet, i As Long
-    Set ws = NewSheet("バーコード計算", 2)
+    Dim ws As Worksheet, i As Long, r As Long
+    Dim lastRow As Long
+    Set ws = NewSheet(SHT_ENCODER, 2)
+    lastRow = DATA_ROW1 + N_ITEMS - 1
 
     With ws.Range("A1")
-        .Value = "JAN-13 エンコード定義（編集不要）"
+        .Value = "GS1データバー限定型 エンコード結果"
         .Font.Size = 14: .Font.Bold = True
     End With
     With ws.Range("A2")
-        .Value = "※ このシートは規格定義のルックアップ表です。値を変更しないでください。"
+        .Value = "※ ビット列は VBA の DataBarLimitedBits が生成します。1=バー 0=スペース。このシートは編集不要です。"
         .Font.Size = 9: .Font.Color = RGB(192, 0, 0)
     End With
+    With ws.Range("A3")
+        .Value = "※ ヒートに印字されているのと同じ symbology です。AI(01) + GTIN14桁 を符号化しています。"
+        .Font.Size = 9: .Font.Color = RGB(102, 102, 102)
+    End With
 
-    REM パリティ表
-    ws.Range("A4").Value = "■ 先頭桁別 左半分パリティパターン"
-    ws.Range("A4").Font.Bold = True
-    ws.Range("A5").Value = "桁"
-    ws.Range("B5").Value = "パターン(2-7桁目)"
-    Dim par As Variant
-    par = Array("AAAAAA", "AABABB", "AABBAB", "AABBBA", "ABAABB", _
-                "ABBAAB", "ABBBAA", "ABABAB", "ABABBA", "ABBABA")
-    For i = 0 To 9
-        ws.Cells(6 + i, 1).Value = i
-        ws.Cells(6 + i, 2).Value = par(i)
-    Next i
+    ws.Range("A4").Value = "No."
+    ws.Range("B4").Value = "GTIN-14"
+    ws.Range("C4").Value = "モジュール列"
+    ws.Range("D4").Value = "長さ検証"
+    With ws.Range("A4:D4")
+        .Font.Bold = True
+        .Interior.Color = RGB(31, 56, 100)
+        .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
 
-    REM エンコードテーブル
-    ws.Range("D4").Value = "■ エンコードテーブル（1=黒 0=白）"
-    ws.Range("D4").Font.Bold = True
-    ws.Range("D5").Value = "数字"
-    ws.Range("E5").Value = "A (左奇)"
-    ws.Range("F5").Value = "B (左偶)"
-    ws.Range("G5").Value = "C (右)"
-    Dim ea As Variant, eb As Variant, ec As Variant
-    ea = Array("0001101", "0011001", "0010011", "0111101", "0100011", _
-               "0110001", "0101111", "0111011", "0110111", "0001011")
-    eb = Array("0100111", "0110011", "0011011", "0100001", "0011101", _
-               "0111001", "0000101", "0010001", "0001001", "0010111")
-    ec = Array("1110010", "1100110", "1101100", "1000010", "1011100", _
-               "1001110", "1010000", "1000100", "1001000", "1110100")
-    For i = 0 To 9
-        ws.Cells(6 + i, 4).Value = i
-        ws.Cells(6 + i, 5).Value = "'" & ea(i)
-        ws.Cells(6 + i, 6).Value = "'" & eb(i)
-        ws.Cells(6 + i, 7).Value = "'" & ec(i)
-    Next i
-    ws.Range("E6:G15").NumberFormat = "@"
-    ws.Range("E6:G15").Font.Name = "Consolas"
-
-    REM 見出し行
-    ws.Range("A18").Value = "■ 商品別 95モジュール展開"
-    ws.Range("A18").Font.Bold = True
-    ws.Range("A19").Value = "No."
-    ws.Range("B19").Value = "'JAN13"
-    ws.Range("C19").Value = "パリティ"
-    ws.Range("D19").Value = "95ビット列"
-    ws.Range("E19").Value = "長さ検証"
-    ws.Range("A19:E19").Font.Bold = True
-    ws.Range("A19:E19").Interior.Color = RGB(217, 217, 217)
-
-    REM 展開数式
-    Dim r As Long
     For i = 0 To N_ITEMS - 1
-        r = 20 + i
-        ws.Cells(r, 1).Formula = "=データ!A" & (5 + i)
-        ws.Cells(r, 2).Formula = "=データ!E" & (5 + i)
-        ws.Cells(r, 3).Formula = "=IF($B" & r & "="""",""""," & _
-            "XLOOKUP(VALUE(LEFT($B" & r & ",1)),$A$6:$A$15,$B$6:$B$15))"
-        ws.Cells(r, 4).Formula = "=IF($B" & r & "="""","""",""101""&" & _
-            "TEXTJOIN("""",TRUE,MAP(SEQUENCE(6),LAMBDA(i,XLOOKUP(VALUE(MID($B" & r & ",i+1,1))," & _
-            "$D$6:$D$15,IF(MID($C" & r & ",i,1)=""A"",$E$6:$E$15,$F$6:$F$15)))))" & _
-            "&""01010""&TEXTJOIN("""",TRUE,MAP(SEQUENCE(6),LAMBDA(i," & _
-            "XLOOKUP(VALUE(MID($B" & r & ",i+7,1)),$D$6:$D$15,$G$6:$G$15))))&""101"")"
-        ws.Cells(r, 5).Formula = "=IF($D" & r & "="""",""""," & _
-            "IF(LEN($D" & r & ")=95,""OK"",""NG ""&LEN($D" & r & ")))"
+        r = DATA_ROW1 + i
+        ws.Cells(r, 1).Formula = "=" & SHT_DATA & "!A" & r
+        ws.Cells(r, 2).Formula = "=IF(" & SHT_DATA & "!D" & r & "<>""OK"",""""," & SHT_DATA & "!C" & r & ")"
+        ws.Cells(r, 3).Formula = "=IF($B" & r & "="""","""",DataBarLimitedBits($B" & r & "))"
+        ws.Cells(r, 4).Formula = "=IF($B" & r & "="""","""",IF(LEN($C" & r & ")=" & DBL_MODULES & _
+                                 ",""OK"",IF(LEN($C" & r & ")=0,""NG 先頭桁が0か1でない"",""NG ""&LEN($C" & r & "))))"
     Next i
-    ws.Range("B20:B" & (19 + N_ITEMS)).NumberFormat = "@"
-    ws.Range("D20:D" & (19 + N_ITEMS)).Font.Size = 7
+
+    REM 数式を書いた後に文字列書式へ。先に設定すると数式が文字列として入る。
+    ws.Range("B" & DATA_ROW1 & ":C" & lastRow).NumberFormat = FMT_TEXT
+    ws.Range("B" & DATA_ROW1 & ":B" & lastRow).Font.Name = "Consolas"
+    With ws.Range("C" & DATA_ROW1 & ":C" & lastRow)
+        .Font.Name = "Consolas"
+        .Font.Size = 7
+    End With
+    ws.Range("A" & DATA_ROW1 & ":A" & lastRow).HorizontalAlignment = xlCenter
+    ws.Range("D" & DATA_ROW1 & ":D" & lastRow).HorizontalAlignment = xlCenter
+    With ws.Range("A4:D" & lastRow)
+        .Borders.LineStyle = xlContinuous
+        .Borders.Color = RGB(142, 169, 219)
+    End With
 
     SetColWidthPoints ws.Columns("A"), 40#
-    SetColWidthPoints ws.Columns("B"), 120#
-    SetColWidthPoints ws.Columns("C"), 80#
-    SetColWidthPoints ws.Columns("D"), 400#
-    SetColWidthPoints ws.Columns("E"), 80#
+    SetColWidthPoints ws.Columns("B"), 130#
+    SetColWidthPoints ws.Columns("C"), 400#
+    SetColWidthPoints ws.Columns("D"), 80#
 End Sub
 
 REM ==========================================================
-  REM 4. カード印刷シート（4×5=20枚 / A4縦1ページ）
+  REM 4. カード印刷シート（4x5=20枚 / A4縦1ページ）
 REM ==========================================================
 Private Sub BuildCards()
     Dim ws As Worksheet
@@ -639,7 +613,7 @@ Private Sub BuildCards()
         rr = i \ COLS_N
         c0 = START_C + cc * CARD_W
         r0 = START_R + rr * (CARD_H + GAP_R)
-        bcL = c0 + BC_OFS
+        bcL = c0 + (CARD_W - DBL_MODULES) \ 2      ' カード内で左右中央に置く
         dRow = 5 + i
 
         REM --- カード外枠 ---
@@ -671,9 +645,9 @@ Private Sub BuildCards()
             .BorderAround xlDash, xlThin, , RGB(204, 204, 204)
         End With
 
-        REM --- バーコード（95列 × 5行）---
-        With ws.Range(ws.Cells(r0 + 17, bcL), ws.Cells(r0 + 21, bcL + 94))
-            .Formula = "=IFERROR(VALUE(MID(バーコード計算!$D$" & (20 + i) & "," & _
+        REM --- バーコード（GS1データバー限定型 74モジュール × 5行）---
+        With ws.Range(ws.Cells(r0 + 17, bcL), ws.Cells(r0 + 21, bcL + DBL_MODULES - 1))
+            .Formula = "=IFERROR(VALUE(MID(" & SHT_ENCODER & "!$C$" & (DATA_ROW1 + i) & "," & _
                        "COLUMN()-COLUMN($" & ColLetter(bcL) & "$" & (r0 + 17) & ")+1,1)),"""")"
             .NumberFormat = ";;;"
             .Interior.Color = RGB(255, 255, 255)
@@ -683,11 +657,11 @@ Private Sub BuildCards()
             End With
         End With
 
-        REM --- JAN数字 ---
+        REM --- 人が読む数字。GS1 なので AI を添える ---
         With ws.Range(ws.Cells(r0 + 23, c0 + 3), ws.Cells(r0 + 23, c0 + CARD_W - 4))
             .Merge
             .Style = "Normal"
-            .Formula = "=データ!E" & dRow
+            .Formula = "=IF(" & SHT_DATA & "!D" & dRow & "<>""OK"","""",""(01) ""&" & SHT_DATA & "!C" & dRow & ")"
             .NumberFormat = FMT_TEXT
             .Font.Name = "Consolas"
             .Font.Size = 6
@@ -708,7 +682,7 @@ Private Sub BuildCards()
         ws.Rows(r0 + 16).RowHeight = 2                       ' 余白
         ws.Rows((r0 + 17) & ":" & (r0 + 21)).RowHeight = 13  ' バー 22.9mm
         ws.Rows(r0 + 22).RowHeight = 2                       ' 余白
-        ws.Rows(r0 + 23).RowHeight = 8                       ' JAN数字
+        ws.Rows(r0 + 23).RowHeight = 8                       ' 人が読む数字
         ws.Rows((r0 + 24) & ":" & (r0 + 25)).RowHeight = 1   ' 下余白
         If i < 4 Then
             ws.Rows((r0 + CARD_H) & ":" & (r0 + CARD_H + GAP_R - 1)).RowHeight = 1
@@ -872,7 +846,7 @@ Private Sub ShrinkToOnePage(ByVal ws As Worksheet, ByVal target As Range)
     Next k
 
     moduleMm = MODULE_PT / PT_PER_MM * ws.PageSetup.Zoom / 100#
-    magnif = moduleMm / JAN_MODULE_MM
+    magnif = moduleMm / NOMINAL_MODULE_MM
     If fitted Then
         msg = MSG_A4_ZOOM & vbCrLf & _
               "Zoom_ " & ws.PageSetup.Zoom & "%" & vbCrLf & _
